@@ -33,6 +33,8 @@ export default function InventoryPage() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [catalogVersion, setCatalogVersion] = useState(0);
+  /** Per-row typed stock delta (applied via Apply, not saved with Save changes) */
+  const [adjustDraft, setAdjustDraft] = useState<Record<string, string>>({});
 
   async function load() {
     setLoading(true);
@@ -91,6 +93,15 @@ export default function InventoryPage() {
       body: JSON.stringify(body),
     });
     await load();
+  }
+
+  async function applyStockAdjust(productId: string) {
+    const raw = (adjustDraft[productId] ?? "").trim();
+    if (raw === "") return;
+    const v = Number(raw);
+    if (!Number.isFinite(v) || v === 0) return;
+    await patch(productId, { adjust: v });
+    setAdjustDraft((prev) => ({ ...prev, [productId]: "" }));
   }
 
   async function saveAll() {
@@ -163,9 +174,9 @@ export default function InventoryPage() {
           <h2 className="text-xl font-semibold text-white">Inventory</h2>
           <p className="text-sm text-zinc-500">
             Edit thresholds and prices below, then click{" "}
-            <span className="text-zinc-400">Save changes</span>. Stock (+10 / −1)
-            updates immediately — save catalog edits first if you edited those
-            rows.
+            <span className="text-zinc-400">Save changes</span>. Stock changes
+            (custom amount, +10, −1) apply immediately — save catalog edits first
+            if you edited those rows.
           </p>
         </div>
         <button
@@ -196,7 +207,7 @@ export default function InventoryPage() {
                 <th className="px-4 py-3">Low at</th>
                 <th className="px-4 py-3">Price</th>
                 <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">Adjust</th>
+                <th className="px-4 py-3">Stock ±</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5">
@@ -246,7 +257,34 @@ export default function InventoryPage() {
                       <StatusBadge status={row.status} />
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <input
+                          type="number"
+                          step="any"
+                          placeholder="±qty"
+                          value={adjustDraft[row.product_id] ?? ""}
+                          onChange={(e) =>
+                            setAdjustDraft((prev) => ({
+                              ...prev,
+                              [row.product_id]: e.target.value,
+                            }))
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              void applyStockAdjust(row.product_id);
+                            }
+                          }}
+                          className="w-24 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-zinc-100 placeholder:text-zinc-600"
+                          aria-label={`Stock change for ${row.product.name}`}
+                        />
+                        <button
+                          type="button"
+                          className="rounded-lg bg-emerald-500/30 px-2 py-1 text-xs font-medium text-emerald-100 ring-1 ring-emerald-500/40 hover:bg-emerald-500/40"
+                          onClick={() => void applyStockAdjust(row.product_id)}
+                        >
+                          Apply
+                        </button>
                         <button
                           type="button"
                           className="rounded-lg bg-white/10 px-2 py-1 text-xs hover:bg-white/15"
