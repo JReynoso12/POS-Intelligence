@@ -21,7 +21,7 @@ const links = [
   },
   { href: "/alerts", label: "Alerts", icon: IconAlerts },
   { href: "/import", label: "CSV import", icon: IconImport },
-  { href: "/reports", label: "Daily report", icon: IconReports },
+  { href: "/reports", label: "Intelligence", icon: IconReports },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {

@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import Papa from "papaparse";
 import { z } from "zod";
-import { getMemoryStore } from "@/lib/memory-store";
+import { getAppStore } from "@/lib/db/hydrate";
+import { importSaleRowsToDb } from "@/lib/db/writes";
 
 const rowSchema = z.object({
   date: z.string(),
@@ -44,7 +45,19 @@ export async function POST(req: Request) {
     });
     if (row.success) rows.push(row.data);
   }
-  const store = getMemoryStore();
-  const result = store.importSaleRows(rows);
-  return NextResponse.json(result);
+
+  try {
+    if (process.env.USE_DEMO_DATA === "1") {
+      const store = await getAppStore();
+      const result = store.importSaleRows(rows);
+      return NextResponse.json(result);
+    }
+    const result = await importSaleRowsToDb(rows);
+    return NextResponse.json(result);
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "Server error" },
+      { status: 503 },
+    );
+  }
 }

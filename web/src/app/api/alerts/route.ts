@@ -1,20 +1,28 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getMemoryStore } from "@/lib/memory-store";
+import { getAppStore } from "@/lib/db/hydrate";
+import { resolveAlertInDb } from "@/lib/db/writes";
 
 export async function GET(req: Request) {
-  const store = getMemoryStore();
-  const url = new URL(req.url);
-  if (url.searchParams.get("refresh") === "1") {
-    store.refreshAlerts();
-  }
-  const list = store.alerts
-    .filter((a) => !a.resolved)
-    .sort(
-      (a, b) =>
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  try {
+    const store = await getAppStore();
+    const url = new URL(req.url);
+    if (url.searchParams.get("refresh") === "1") {
+      store.refreshAlerts();
+    }
+    const list = store.alerts
+      .filter((a) => !a.resolved)
+      .sort(
+        (a, b) =>
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+      );
+    return NextResponse.json({ alerts: list });
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "Server error" },
+      { status: 503 },
     );
-  return NextResponse.json({ alerts: list });
+  }
 }
 
 const resolveSchema = z.object({
@@ -27,7 +35,19 @@ export async function POST(req: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid body" }, { status: 400 });
   }
-  const store = getMemoryStore();
-  store.resolveAlert(parsed.data.alert_id);
-  return NextResponse.json({ ok: true });
+
+  try {
+    if (process.env.USE_DEMO_DATA === "1") {
+      const store = await getAppStore();
+      store.resolveAlert(parsed.data.alert_id);
+    } else {
+      await resolveAlertInDb(parsed.data.alert_id);
+    }
+    return NextResponse.json({ ok: true });
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "Server error" },
+      { status: 503 },
+    );
+  }
 }

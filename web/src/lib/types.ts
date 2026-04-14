@@ -85,3 +85,56 @@ export type DashboardPayload = {
   trend: TrendPoint[];
   categoryPerformance: CategoryPerf[];
 };
+
+export type VsYesterday = {
+  revenuePct: number | null;
+  ordersPct: number | null;
+  profitPct: number | null;
+  avgOrderPct: number | null;
+  yesterdayRevenue: number;
+  yesterdayOrders: number;
+};
+
+export type ActionableAlert = {
+  id: string;
+  severity: "critical" | "warning" | "success" | "info";
+  title: string;
+  detail: string;
+};
+
+export type SmartInsight = {
+  id: string;
+  text: string;
+  kind: "opportunity" | "risk" | "trend";
+};
+
+export type RecentSaleRow = {
+  id: string;
+  at: string;
+  total: number;
+  itemCount: number;
+};
+
+export type IntelligenceSnapshot = {
+  dashboard: DashboardPayload;
+  vsYesterday: VsYesterday;
+  avgOrderToday: number;
+  avgOrderYesterday: number;
+  actionableAlerts: ActionableAlert[];
+  insights: SmartInsight[];
+  recentSales: RecentSaleRow[];
+  topProductsToday: TopProduct[];
+  categoryLast7Days: CategoryPerf[];
+  trend7Days: TrendPoint[];
+  fastMoving: { product_id: string; name: string; units_7d: number }[];
+  deadStock: { product_id: string; name: string; qty: number }[];
+  dailySummary: {
+    date: string;
+    totalSales: number;
+    orders: number;
+    topProduct: TopProduct | null;
+    lowStock: { name: string; qty: number; threshold: number }[];
+    restockSuggestions: string[];
+  };
+  serverTime: string;
+};

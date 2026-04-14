@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getMemoryStore } from "@/lib/memory-store";
+import { getAppStore } from "@/lib/db/hydrate";
+import { recordSaleInDb } from "@/lib/db/writes";
 
 const bodySchema = z.object({
   items: z
@@ -20,7 +21,19 @@ export async function POST(req: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid body" }, { status: 400 });
   }
-  const store = getMemoryStore();
-  const sale = store.recordSale(parsed.data.items);
-  return NextResponse.json({ sale });
+
+  try {
+    if (process.env.USE_DEMO_DATA === "1") {
+      const store = await getAppStore();
+      const sale = store.recordSale(parsed.data.items);
+      return NextResponse.json({ sale });
+    }
+    const sale = await recordSaleInDb(parsed.data.items);
+    return NextResponse.json({ sale });
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "Server error" },
+      { status: 503 },
+    );
+  }
 }

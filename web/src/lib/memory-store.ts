@@ -4,21 +4,27 @@ import {
   format,
   isAfter,
   isBefore,
+  setHours,
   startOfDay,
   subDays,
 } from "date-fns";
 import type {
+  ActionableAlert,
   AlertRecord,
   AlertType,
   CategoryPerf,
   DashboardPayload,
+  IntelligenceSnapshot,
   InventoryRow,
   Product,
+  RecentSaleRow,
   Sale,
   SaleItem,
+  SmartInsight,
   TopProduct,
   TrendPoint,
 } from "./types";
+import { money } from "./format";
 
 function uid(): string {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
@@ -31,12 +37,18 @@ function iso(d: Date): string {
   return d.toISOString();
 }
 
+export function stableAlertId(alert_type: AlertType, productId: string): string {
+  return `${alert_type}::${productId}`;
+}
+
 export class MemoryStore {
   products: Product[] = [];
   inventory: InventoryRow[] = [];
   sales: Sale[] = [];
   saleItems: SaleItem[] = [];
   alerts: AlertRecord[] = [];
+  /** Keys `${alert_type}:${product_id}` — skip auto alert if user dismissed it */
+  dismissalKeys = new Set<string>();
 
   private alertSubscribers = new Set<() => void>();
 
@@ -463,9 +475,7 @@ export class MemoryStore {
   }
 
   refreshAlerts() {
-    this.alerts = this.alerts.filter(
-      (a) => a.source === "manual" || a.resolved,
-    );
+    this.alerts = this.alerts.filter((a) => a.source === "manual");
     const now = new Date();
     const startThis = subDays(now, 7);
     const startPrev = subDays(now, 14);
@@ -478,8 +488,10 @@ export class MemoryStore {
       message: string,
       meta?: Record<string, unknown>,
     ) => {
+      const dkey = `${alert_type}:${productId}`;
+      if (this.dismissalKeys.has(dkey)) return;
       this.alerts.push({
-        id: uid(),
+        id: stableAlertId(alert_type, productId),
         product_id: productId,
         alert_type,
         message,
@@ -538,8 +550,238 @@ export class MemoryStore {
 
   resolveAlert(alertId: string) {
     const a = this.alerts.find((x) => x.id === alertId);
-    if (a) a.resolved = true;
+    if (a) {
+      a.resolved = true;
+      if (a.source === "auto") {
+        const dkey = `${a.alert_type}:${a.product_id}`;
+        this.dismissalKeys.add(dkey);
+      }
+    }
     this.emitAlertsChanged();
+  }
+
+  private avgOrderValue(start: Date, end: Date): number {
+    const { revenue, orders } = this.sumSalesInRange(start, end);
+    return orders > 0 ? Math.round((revenue / orders) * 100) / 100 : 0;
+  }
+
+  private pctChange(today: number, yesterday: number): number | null {
+    if (yesterday === 0 && today === 0) return 0;
+    if (yesterday === 0) return null;
+    return Math.round(((today - yesterday) / yesterday) * 1000) / 10;
+  }
+
+  /** Best contiguous 3-hour window today by revenue (for “peak hours” insight). */
+  private bestHourWindowToday(): { label: string; revenue: number } | null {
+    const start = startOfDay(new Date());
+    const end = endOfDay(new Date());
+    const hourTotals = new Array(24).fill(0);
+    for (const s of this.sales) {
+      const t = new Date(s.created_at);
+      if (isBefore(t, start) || isAfter(t, end)) continue;
+      hourTotals[t.getHours()] += s.total;
+    }
+    let bestH = -1;
+    let bestSum = 0;
+    for (let h = 0; h <= 21; h++) {
+      const sum = hourTotals[h] + hourTotals[h + 1] + hourTotals[h + 2];
+      if (sum > bestSum) {
+        bestSum = sum;
+        bestH = h;
+      }
+    }
+    if (bestH < 0 || bestSum <= 0) return null;
+    const d0 = setHours(start, bestH);
+    const d1 = setHours(start, bestH + 3);
+    return {
+      label: `${format(d0, "h a")} – ${format(d1, "h a")}`,
+      revenue: Math.round(bestSum * 100) / 100,
+    };
+  }
+
+  getIntelligenceSnapshot(): IntelligenceSnapshot {
+    const now = new Date();
+    const startToday = startOfDay(now);
+    const endToday = endOfDay(now);
+    const yStart = startOfDay(subDays(now, 1));
+    const yEnd = endOfDay(subDays(now, 1));
+    const start7 = startOfDay(subDays(now, 6));
+    const start14 = startOfDay(subDays(now, 13));
+
+    const dashboard = this.getDashboard();
+    const td = this.sumSalesInRange(startToday, endToday);
+    const yd = this.sumSalesInRange(yStart, yEnd);
+    const gpToday = this.profitInRange(startToday, endToday);
+    const gpYesterday = this.profitInRange(yStart, yEnd);
+
+    const avgToday = this.avgOrderValue(startToday, endToday);
+    const avgY = this.avgOrderValue(yStart, yEnd);
+
+    const vsYesterday = {
+      revenuePct: this.pctChange(td.revenue, yd.revenue),
+      ordersPct: this.pctChange(td.orders, yd.orders),
+      profitPct:
+        gpToday != null && gpYesterday != null
+          ? this.pctChange(gpToday, gpYesterday)
+          : null,
+      avgOrderPct: this.pctChange(avgToday, avgY),
+      yesterdayRevenue: Math.round(yd.revenue * 100) / 100,
+      yesterdayOrders: yd.orders,
+    };
+
+    const actionableAlerts: ActionableAlert[] = [];
+    for (const inv of this.inventory) {
+      const p = this.getProduct(inv.product_id);
+      if (!p) continue;
+      if (inv.quantity <= 0) {
+        actionableAlerts.push({
+          id: `out-${p.id}`,
+          severity: "critical",
+          title: "Out of stock",
+          detail: `${p.name} — restock before you lose sales.`,
+        });
+      } else if (inv.quantity < inv.low_stock_threshold) {
+        actionableAlerts.push({
+          id: `low-${p.id}`,
+          severity: "warning",
+          title: "Low stock",
+          detail: `${p.name} (${Math.round(inv.quantity)} left, threshold ${inv.low_stock_threshold}).`,
+        });
+      }
+    }
+    const revPct = vsYesterday.revenuePct;
+    if (revPct != null && revPct <= -10) {
+      actionableAlerts.push({
+        id: "sales-drop",
+        severity: "warning",
+        title: "Sales dipped vs yesterday",
+        detail: `Revenue is ${Math.abs(revPct)}% below yesterday — check traffic or promotions.`,
+      });
+    }
+    const topT = this.topWorstProducts(startToday, endToday, "top", 1)[0];
+    if (topT) {
+      actionableAlerts.push({
+        id: "top-today",
+        severity: "success",
+        title: "Top product today",
+        detail: `${topT.name} · ${topT.units_sold} units sold.`,
+      });
+    }
+
+    const insights: SmartInsight[] = [];
+    const peak = this.bestHourWindowToday();
+    if (peak) {
+      insights.push({
+        id: "peak-hours",
+        text: `Best time today: ${peak.label} (${money(peak.revenue)} sales in that window).`,
+        kind: "trend",
+      });
+    }
+
+    for (const p of this.products) {
+      const inv = this.inventory.find((i) => i.product_id === p.id);
+      if (!inv || inv.quantity <= 0) continue;
+      const sold7 = this.unitsSoldProduct(p.id, start7, endToday);
+      const daily = sold7 / 7;
+      if (daily <= 0.01) continue;
+      const daysLeft = inv.quantity / daily;
+      if (daysLeft < 2 && daysLeft >= 0) {
+        insights.push({
+          id: `runout-${p.id}`,
+          text: `You may run out of ${p.name} in ~${Math.max(1, Math.ceil(daysLeft))} day(s) at current pace.`,
+          kind: "risk",
+        });
+        break;
+      }
+    }
+
+    let weekendSum = 0;
+    let weekendDays = 0;
+    let weekdaySum = 0;
+    let weekdayDays = 0;
+    for (let d = 0; d < 14; d++) {
+      const day = addDays(start14, d);
+      const dow = day.getDay();
+      const { revenue } = this.sumSalesInRange(startOfDay(day), endOfDay(day));
+      if (dow === 0 || dow === 6) {
+        weekendSum += revenue;
+        weekendDays += 1;
+      } else {
+        weekdaySum += revenue;
+        weekdayDays += 1;
+      }
+    }
+    const avgWe = weekendDays > 0 ? weekendSum / weekendDays : 0;
+    const avgWd = weekdayDays > 0 ? weekdaySum / weekdayDays : 0;
+    if (avgWe > 0 && avgWd > 0 && avgWe > avgWd * 1.08) {
+      insights.push({
+        id: "weekend-up",
+        text: "Weekend daily average is running above weekdays — consider extra staff or stock before Sat–Sun.",
+        kind: "opportunity",
+      });
+    }
+
+    const recentSales: RecentSaleRow[] = [...this.sales]
+      .sort(
+        (a, b) =>
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+      )
+      .slice(0, 12)
+      .map((s) => ({
+        id: s.id,
+        at: s.created_at,
+        total: s.total,
+        itemCount: this.saleItems.filter((si) => si.sale_id === s.id).length,
+      }));
+
+    const topProductsToday = this.topWorstProducts(
+      startToday,
+      endToday,
+      "top",
+      6,
+    );
+    const categoryLast7Days = this.categoryPerformance(start7, endToday);
+    const trend7Days = this.salesTrend(7);
+
+    const fastRows = this.topWorstProducts(start7, endToday, "top", 5);
+    const fastMoving = fastRows.map((r) => ({
+      product_id: r.product_id,
+      name: r.name,
+      units_7d: r.units_sold,
+    }));
+
+    const deadStock: { product_id: string; name: string; qty: number }[] = [];
+    for (const inv of this.inventory) {
+      if (inv.quantity <= 0) continue;
+      const sold14 = this.unitsSoldProduct(inv.product_id, start14, endToday);
+      if (sold14 === 0) {
+        const p = this.getProduct(inv.product_id);
+        if (p)
+          deadStock.push({
+            product_id: p.id,
+            name: p.name,
+            qty: inv.quantity,
+          });
+      }
+    }
+    deadStock.sort((a, b) => b.qty - a.qty);
+
+    return {
+      dashboard,
+      vsYesterday,
+      avgOrderToday: avgToday,
+      avgOrderYesterday: avgY,
+      actionableAlerts,
+      insights,
+      recentSales,
+      topProductsToday,
+      categoryLast7Days,
+      trend7Days,
+      fastMoving,
+      deadStock: deadStock.slice(0, 8),
+      dailySummary: this.getDailySummary(),
+      serverTime: now.toISOString(),
+    };
   }
 
   getDailySummary(): {
@@ -584,9 +826,10 @@ export class MemoryStore {
   }
 }
 
-const globalKey = "__pos_intel_store__" as const;
+const globalKey = "__pos_intel_demo_store__" as const;
 
-export function getMemoryStore(): MemoryStore {
+/** Seeded in-memory store — only when USE_DEMO_DATA=1 (local demos). */
+export function getDemoMemoryStore(): MemoryStore {
   const g = globalThis as unknown as Record<string, MemoryStore | undefined>;
   if (!g[globalKey]) {
     const s = new MemoryStore();
@@ -594,4 +837,14 @@ export function getMemoryStore(): MemoryStore {
     g[globalKey] = s;
   }
   return g[globalKey]!;
+}
+
+/** @deprecated Use getAppStore() for real data */
+export function getMemoryStore(): MemoryStore {
+  if (process.env.USE_DEMO_DATA === "1") {
+    return getDemoMemoryStore();
+  }
+  throw new Error(
+    "getMemoryStore() requires USE_DEMO_DATA=1 — use getAppStore() instead",
+  );
 }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
+import { getAppStore } from "@/lib/db/hydrate";
 import { money } from "@/lib/format";
-import { getMemoryStore, type MemoryStore } from "@/lib/memory-store";
+import type { MemoryStore } from "@/lib/memory-store";
 
 function buildEmailHtml(summary: ReturnType<MemoryStore["getDailySummary"]>) {
   const top = summary.topProduct
@@ -33,15 +34,21 @@ export async function GET(req: Request) {
     secret && auth === `Bearer ${secret}`,
   );
 
-  const store = getMemoryStore();
-  const summary = store.getDailySummary();
+  let summary: ReturnType<MemoryStore["getDailySummary"]>;
+  try {
+    const store = await getAppStore();
+    summary = store.getDailySummary();
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "Server error" },
+      { status: 503 },
+    );
+  }
   const html = buildEmailHtml(summary);
 
   const resendKey = process.env.RESEND_API_KEY;
   const to = process.env.DAILY_REPORT_EMAIL;
 
-  // Only the scheduled job (Bearer CRON_SECRET) may trigger email. The Reports
-  // UI loads this route without auth and must still receive the JSON summary.
   if (resendKey && to && cronAuthorized) {
     const r = await fetch("https://api.resend.com/emails", {
       method: "POST",

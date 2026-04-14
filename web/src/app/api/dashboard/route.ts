@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
-import { getMemoryStore } from "@/lib/memory-store";
+import { getAppStore } from "@/lib/db/hydrate";
 
 export async function GET() {
-  const store = getMemoryStore();
-  const data = store.getDashboard();
-  return NextResponse.json(data);
+  try {
+    const store = await getAppStore();
+    return NextResponse.json(store.getDashboard());
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "Server error" },
+      { status: 503 },
+    );
+  }
 }

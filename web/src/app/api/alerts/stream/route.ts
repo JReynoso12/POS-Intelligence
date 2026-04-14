@@ -1,4 +1,4 @@
-import { getMemoryStore } from "@/lib/memory-store";
+import { getAppStore } from "@/lib/db/hydrate";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -7,11 +7,14 @@ export async function GET(request: Request) {
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
-    start(controller) {
-      const store = getMemoryStore();
+    async start(controller) {
+      let closed = false;
 
-      const send = () => {
+      const send = async () => {
+        if (closed) return;
         try {
+          const store = await getAppStore();
+          store.refreshAlerts();
           const list = store.alerts
             .filter((a) => !a.resolved)
             .sort(
@@ -30,12 +33,14 @@ export async function GET(request: Request) {
           });
           controller.enqueue(encoder.encode(`data: ${payload}\n\n`));
         } catch {
-          /* closed */
+          /* ignore */
         }
       };
 
-      send();
-      const unsub = store.subscribeAlerts(send);
+      await send();
+      const poll = setInterval(() => {
+        void send();
+      }, 2500);
 
       const heartbeat = setInterval(() => {
         try {
@@ -46,8 +51,9 @@ export async function GET(request: Request) {
       }, 30000);
 
       request.signal.addEventListener("abort", () => {
+        closed = true;
+        clearInterval(poll);
         clearInterval(heartbeat);
-        unsub();
         try {
           controller.close();
         } catch {
