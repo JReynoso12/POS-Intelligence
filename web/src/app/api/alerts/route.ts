@@ -2,9 +2,12 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getMemoryStore } from "@/lib/memory-store";
 
-export async function GET() {
+export async function GET(req: Request) {
   const store = getMemoryStore();
-  store.refreshAlerts();
+  const url = new URL(req.url);
+  if (url.searchParams.get("refresh") === "1") {
+    store.refreshAlerts();
+  }
   const list = store.alerts
     .filter((a) => !a.resolved)
     .sort(

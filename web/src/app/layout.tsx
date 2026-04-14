@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { AppShell } from "@/components/app-shell";
+import { RouteShell } from "@/components/route-shell";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -15,7 +15,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="antialiased">
-        <AppShell>{children}</AppShell>
+        <RouteShell>{children}</RouteShell>
       </body>
     </html>
   );

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { AlertType } from "@/lib/types";
 
 type AlertRow = {
@@ -22,17 +22,27 @@ export default function AlertsPage() {
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
   const [loading, setLoading] = useState(true);
 
-  async function load() {
-    setLoading(true);
-    const r = await fetch("/api/alerts");
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
+    const r = await fetch(
+      opts?.silent ? "/api/alerts" : "/api/alerts?refresh=1",
+    );
     const j = await r.json();
     setAlerts(j.alerts ?? []);
-    setLoading(false);
-  }
+    if (!opts?.silent) setLoading(false);
+  }, []);
 
   useEffect(() => {
-    load();
-  }, []);
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    const onStream = () => {
+      void load({ silent: true });
+    };
+    window.addEventListener("pos-alerts-updated", onStream);
+    return () => window.removeEventListener("pos-alerts-updated", onStream);
+  }, [load]);
 
   async function resolve(id: string) {
     await fetch("/api/alerts", {

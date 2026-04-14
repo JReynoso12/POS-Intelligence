@@ -38,6 +38,26 @@ export class MemoryStore {
   saleItems: SaleItem[] = [];
   alerts: AlertRecord[] = [];
 
+  private alertSubscribers = new Set<() => void>();
+
+  /** Subscribe to alert list changes (for SSE / realtime UI). */
+  subscribeAlerts(cb: () => void): () => void {
+    this.alertSubscribers.add(cb);
+    return () => {
+      this.alertSubscribers.delete(cb);
+    };
+  }
+
+  private emitAlertsChanged() {
+    for (const cb of this.alertSubscribers) {
+      try {
+        cb();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   seed() {
     const now = new Date();
     const mkProduct = (
@@ -513,11 +533,13 @@ export class MemoryStore {
         );
       }
     }
+    this.emitAlertsChanged();
   }
 
   resolveAlert(alertId: string) {
     const a = this.alerts.find((x) => x.id === alertId);
     if (a) a.resolved = true;
+    this.emitAlertsChanged();
   }
 
   getDailySummary(): {
