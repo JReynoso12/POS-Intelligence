@@ -1,3 +1,6 @@
+/** UI + API role for owner vs cashier workflows */
+export type AppRole = "owner" | "cashier";
+
 export type AlertType =
   | "low_stock"
   | "stockout"
@@ -65,6 +68,11 @@ export type CategoryPerf = {
   units: number;
 };
 
+export type KpiCompareLine = {
+  /** Short line for UI, e.g. "+12% vs yesterday (₱50.00)" */
+  summary: string;
+};
+
 export type DashboardPayload = {
   kpis: {
     totalSalesToday: number;
@@ -80,10 +88,33 @@ export type DashboardPayload = {
     lowStockCount: number;
     outOfStockCount: number;
   };
+  /** Rolling comparisons so Today / 7d / 30d are distinguishable */
+  kpiCompare: {
+    todayVsYesterday: KpiCompareLine;
+    weekVsPriorWeek: KpiCompareLine;
+    monthVsPriorMonth: KpiCompareLine;
+  };
+  /** When all three sales KPIs match because data is only from today */
+  sameSalesTotalsHint: string | null;
   topProducts: TopProduct[];
   worstProducts: TopProduct[];
   trend: TrendPoint[];
   categoryPerformance: CategoryPerf[];
+};
+
+export type SaleOrderLine = {
+  product_id: string;
+  product_name: string;
+  quantity: number;
+  unit_price: number;
+  line_total: number;
+};
+
+export type SaleOrder = {
+  id: string;
+  created_at: string;
+  total: number;
+  items: SaleOrderLine[];
 };
 
 export type VsYesterday = {
@@ -100,6 +131,8 @@ export type ActionableAlert = {
   severity: "critical" | "warning" | "success" | "info";
   title: string;
   detail: string;
+  /** When set, UI can link to Inventory for this product */
+  product_id?: string;
 };
 
 export type SmartInsight = {

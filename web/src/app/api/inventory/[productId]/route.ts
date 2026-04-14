@@ -6,6 +6,7 @@ import { adjustInventoryInDb } from "@/lib/db/writes";
 const bodySchema = z.object({
   adjust: z.number().optional(),
   low_stock_threshold: z.number().nonnegative().optional(),
+  adjust_reason: z.string().max(500).optional(),
 });
 
 export async function PATCH(
@@ -23,7 +24,11 @@ export async function PATCH(
     if (process.env.USE_DEMO_DATA === "1") {
       const store = await getAppStore();
       if (parsed.data.adjust != null) {
-        store.adjustStock(productId, parsed.data.adjust);
+        store.adjustStock(
+          productId,
+          parsed.data.adjust,
+          parsed.data.adjust_reason,
+        );
       }
       if (parsed.data.low_stock_threshold != null) {
         store.setThreshold(productId, parsed.data.low_stock_threshold);
@@ -33,6 +38,7 @@ export async function PATCH(
         productId,
         parsed.data.adjust,
         parsed.data.low_stock_threshold,
+        parsed.data.adjust_reason,
       );
     }
     return NextResponse.json({ ok: true });

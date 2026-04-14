@@ -16,10 +16,12 @@ import type {
   DashboardPayload,
   IntelligenceSnapshot,
   InventoryRow,
+  KpiCompareLine,
   Product,
   RecentSaleRow,
   Sale,
   SaleItem,
+  SaleOrder,
   SmartInsight,
   TopProduct,
   TrendPoint,
@@ -49,6 +51,14 @@ export class MemoryStore {
   alerts: AlertRecord[] = [];
   /** Keys `${alert_type}:${product_id}` — skip auto alert if user dismissed it */
   dismissalKeys = new Set<string>();
+
+  /** Demo-only audit log for stock adjustments (with reason) */
+  adjustmentLog: {
+    product_id: string;
+    delta: number;
+    reason: string | null;
+    at: string;
+  }[] = [];
 
   private alertSubscribers = new Set<() => void>();
 
@@ -197,6 +207,25 @@ export class MemoryStore {
     return this.products.find((p) => p.id === id);
   }
 
+  private kpiCompareLine(current: number, prior: number, priorPhrase: string): KpiCompareLine {
+    if (current === 0 && prior === 0) {
+      return { summary: `No sales · ${priorPhrase} was ${money(0)}` };
+    }
+    if (prior === 0) {
+      return {
+        summary:
+          current > 0
+            ? `No prior revenue · ${priorPhrase} was ${money(0)} · now ${money(current)}`
+            : `—`,
+      };
+    }
+    const pct = Math.round(((current - prior) / prior) * 1000) / 10;
+    const sign = pct >= 0 ? "+" : "";
+    return {
+      summary: `${sign}${pct}% vs ${priorPhrase} (${money(prior)})`,
+    };
+  }
+
   sumSalesInRange(start: Date, end: Date): { revenue: number; orders: number } {
     let revenue = 0;
     let orders = 0;
@@ -326,9 +355,19 @@ export class MemoryStore {
     const startWeek = startOfDay(subDays(now, 6));
     const startMonth = startOfDay(subDays(now, 29));
 
+    const yStart = startOfDay(subDays(now, 1));
+    const yEnd = endOfDay(subDays(now, 1));
+    const priorWeekStart = startOfDay(subDays(now, 13));
+    const priorWeekEnd = endOfDay(subDays(now, 7));
+    const priorMonthStart = startOfDay(subDays(now, 59));
+    const priorMonthEnd = endOfDay(subDays(now, 30));
+
     const tw = this.sumSalesInRange(startWeek, endToday);
     const tm = this.sumSalesInRange(startMonth, endToday);
     const td = this.sumSalesInRange(startToday, endToday);
+    const yd = this.sumSalesInRange(yStart, yEnd);
+    const prior7 = this.sumSalesInRange(priorWeekStart, priorWeekEnd);
+    const prior30 = this.sumSalesInRange(priorMonthStart, priorMonthEnd);
 
     const hasCost = this.products.some((p) => p.cost_price != null);
     const gpToday = this.profitInRange(startToday, endToday);
@@ -342,11 +381,19 @@ export class MemoryStore {
       else if (inv.quantity < inv.low_stock_threshold) low += 1;
     }
 
+    const rToday = Math.round(td.revenue * 100) / 100;
+    const rWeek = Math.round(tw.revenue * 100) / 100;
+    const rMonth = Math.round(tm.revenue * 100) / 100;
+    const sameTotals =
+      rToday > 0 &&
+      rToday === rWeek &&
+      rWeek === rMonth;
+
     return {
       kpis: {
-        totalSalesToday: Math.round(td.revenue * 100) / 100,
-        totalSalesWeek: Math.round(tw.revenue * 100) / 100,
-        totalSalesMonth: Math.round(tm.revenue * 100) / 100,
+        totalSalesToday: rToday,
+        totalSalesWeek: rWeek,
+        totalSalesMonth: rMonth,
         orderCountToday: td.orders,
         orderCountWeek: tw.orders,
         orderCountMonth: tm.orders,
@@ -357,11 +404,124 @@ export class MemoryStore {
         lowStockCount: low,
         outOfStockCount: out,
       },
+      kpiCompare: {
+        todayVsYesterday: this.kpiCompareLine(
+          td.revenue,
+          yd.revenue,
+          "yesterday",
+        ),
+        weekVsPriorWeek: this.kpiCompareLine(
+          tw.revenue,
+          prior7.revenue,
+          "prior 7 days",
+        ),
+        monthVsPriorMonth: this.kpiCompareLine(
+          tm.revenue,
+          prior30.revenue,
+          "prior 30 days",
+        ),
+      },
+      sameSalesTotalsHint: sameTotals
+        ? "All recorded sales are from today, so Today matches rolling 7- and 30-day totals until you have older sales."
+        : null,
       topProducts: this.topWorstProducts(startMonth, endToday, "top", 5),
       worstProducts: this.topWorstProducts(startMonth, endToday, "worst", 5),
       trend: this.salesTrend(30),
       categoryPerformance: this.categoryPerformance(startMonth, endToday),
     };
+  }
+
+  listSaleOrders(limit = 50): SaleOrder[] {
+    const sorted = [...this.sales].sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    );
+    return sorted.slice(0, limit).map((s) => {
+      const lines = this.saleItems.filter((si) => si.sale_id === s.id);
+      const items = lines.map((si) => {
+        const p = this.getProduct(si.product_id);
+        const lineTotal =
+          Math.round(si.quantity * si.unit_price * 100) / 100;
+        return {
+          product_id: si.product_id,
+          product_name: p?.name ?? "Unknown",
+          quantity: si.quantity,
+          unit_price: si.unit_price,
+          line_total: lineTotal,
+        };
+      });
+      return {
+        id: s.id,
+        created_at: s.created_at,
+        total: s.total,
+        items,
+      };
+    });
+  }
+
+  addProduct(input: {
+    name: string;
+    sku: string | null;
+    category: string | null;
+    cost_price: number | null;
+    selling_price: number | null;
+    initial_stock: number;
+    low_stock_threshold: number;
+  }): Product {
+    const p: Product = {
+      id: uid(),
+      name: input.name,
+      sku: input.sku,
+      category: input.category,
+      cost_price: input.cost_price,
+      selling_price: input.selling_price,
+      created_at: iso(new Date()),
+    };
+    this.products.push(p);
+    this.inventory.push({
+      product_id: p.id,
+      quantity: Math.max(0, input.initial_stock),
+      low_stock_threshold: Math.max(0, input.low_stock_threshold),
+      updated_at: iso(new Date()),
+    });
+    this.refreshAlerts();
+    return p;
+  }
+
+  deleteProduct(productId: string): { ok: boolean; error?: string } {
+    const hasSales = this.saleItems.some((si) => si.product_id === productId);
+    if (hasSales) {
+      return {
+        ok: false,
+        error: "Cannot delete a product that appears in sales history.",
+      };
+    }
+    const idx = this.products.findIndex((p) => p.id === productId);
+    if (idx < 0) return { ok: false, error: "Product not found" };
+    this.products.splice(idx, 1);
+    this.inventory = this.inventory.filter((i) => i.product_id !== productId);
+    this.alerts = this.alerts.filter((a) => a.product_id !== productId);
+    this.refreshAlerts();
+    return { ok: true };
+  }
+
+  updateProductFields(
+    productId: string,
+    patch: {
+      name?: string;
+      category?: string | null;
+      cost_price?: number | null;
+      selling_price?: number | null;
+      sku?: string | null;
+    },
+  ) {
+    const p = this.getProduct(productId);
+    if (!p) return;
+    if (patch.name !== undefined) p.name = patch.name;
+    if (patch.category !== undefined) p.category = patch.category;
+    if (patch.cost_price !== undefined) p.cost_price = patch.cost_price;
+    if (patch.selling_price !== undefined) p.selling_price = patch.selling_price;
+    if (patch.sku !== undefined) p.sku = patch.sku;
   }
 
   getInventory(): (InventoryRow & { product: Product })[] {
@@ -411,11 +571,24 @@ export class MemoryStore {
     return sale;
   }
 
-  adjustStock(productId: string, quantityDelta: number) {
+  adjustStock(
+    productId: string,
+    quantityDelta: number,
+    reason?: string | null,
+  ) {
     const inv = this.inventory.find((i) => i.product_id === productId);
     if (!inv) return;
     inv.quantity = Math.max(0, inv.quantity + quantityDelta);
     inv.updated_at = iso(new Date());
+    if (reason?.trim()) {
+      this.adjustmentLog.unshift({
+        product_id: productId,
+        delta: quantityDelta,
+        reason: reason.trim(),
+        at: iso(new Date()),
+      });
+      this.adjustmentLog = this.adjustmentLog.slice(0, 200);
+    }
     this.refreshAlerts();
   }
 
@@ -645,6 +818,7 @@ export class MemoryStore {
           severity: "critical",
           title: "Out of stock",
           detail: `${p.name} — restock before you lose sales.`,
+          product_id: p.id,
         });
       } else if (inv.quantity < inv.low_stock_threshold) {
         actionableAlerts.push({
@@ -652,6 +826,7 @@ export class MemoryStore {
           severity: "warning",
           title: "Low stock",
           detail: `${p.name} (${Math.round(inv.quantity)} left, threshold ${inv.low_stock_threshold}).`,
+          product_id: p.id,
         });
       }
     }

@@ -1,5 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/admin";
-import type { Product } from "@/lib/types";
+import type { Product, SaleOrder } from "@/lib/types";
 
 function num(v: unknown): number {
   if (v == null || v === "") return 0;
@@ -131,6 +131,7 @@ export async function adjustInventoryInDb(
   productId: string,
   adjust?: number,
   low_stock_threshold?: number,
+  reason?: string | null,
 ) {
   const sb = createServiceClient();
   if (adjust != null) {
@@ -150,6 +151,15 @@ export async function adjustInventoryInDb(
       })
       .eq("product_id", productId);
     if (e2) throw e2;
+    const trimmed = reason?.trim();
+    if (trimmed) {
+      const { error: eAdj } = await sb.from("inventory_adjustments").insert({
+        product_id: productId,
+        quantity_delta: adjust,
+        reason: trimmed,
+      });
+      if (eAdj) throw eAdj;
+    }
   }
   if (low_stock_threshold != null) {
     const { error: e3 } = await sb
@@ -189,6 +199,127 @@ export async function resolveAlertInDb(alertId: string) {
     .update({ resolved: true })
     .eq("id", alertId);
   if (error) throw error;
+}
+
+export async function insertProductInDb(input: {
+  name: string;
+  sku: string | null;
+  category: string | null;
+  cost_price: number | null;
+  selling_price: number | null;
+  initial_stock: number;
+  low_stock_threshold: number;
+}): Promise<Product> {
+  const sb = createServiceClient();
+  const { data: row, error } = await sb
+    .from("products")
+    .insert({
+      name: input.name,
+      sku: input.sku,
+      category: input.category,
+      cost_price: input.cost_price,
+      selling_price: input.selling_price,
+    })
+    .select("*")
+    .single();
+  if (error) throw error;
+  const p = mapProductRow(row as Record<string, unknown>);
+  const { error: e2 } = await sb.from("inventory").insert({
+    product_id: p.id,
+    quantity: Math.max(0, input.initial_stock),
+    low_stock_threshold: Math.max(0, input.low_stock_threshold),
+  });
+  if (e2) throw e2;
+  return p;
+}
+
+export async function deleteProductInDb(productId: string): Promise<void> {
+  const sb = createServiceClient();
+  const { count, error: cErr } = await sb
+    .from("sale_items")
+    .select("*", { count: "exact", head: true })
+    .eq("product_id", productId);
+  if (cErr) throw cErr;
+  if (count && count > 0) {
+    throw new Error("Cannot delete a product that appears in sales history.");
+  }
+  const { error: e1 } = await sb
+    .from("inventory")
+    .delete()
+    .eq("product_id", productId);
+  if (e1) throw e1;
+  const { error: e2 } = await sb.from("products").delete().eq("id", productId);
+  if (e2) throw e2;
+}
+
+export async function updateProductFieldsInDb(
+  productId: string,
+  patch: {
+    name?: string;
+    category?: string | null;
+    cost_price?: number | null;
+    selling_price?: number | null;
+    sku?: string | null;
+  },
+): Promise<void> {
+  const sb = createServiceClient();
+  const { error } = await sb.from("products").update(patch).eq("id", productId);
+  if (error) throw error;
+}
+
+export async function listSaleOrdersFromDb(limit: number): Promise<SaleOrder[]> {
+  const sb = createServiceClient();
+  const { data: sales, error: e1 } = await sb
+    .from("sales")
+    .select("id, total, created_at")
+    .order("created_at", { ascending: false })
+    .limit(Math.min(100, Math.max(1, limit)));
+  if (e1) throw e1;
+  const list = sales ?? [];
+  if (list.length === 0) return [];
+  const saleIds = list.map((s) => s.id as string);
+  const { data: rows, error: e2 } = await sb
+    .from("sale_items")
+    .select("sale_id, product_id, quantity, unit_price")
+    .in("sale_id", saleIds);
+  if (e2) throw e2;
+  const productIds = [
+    ...new Set((rows ?? []).map((r) => String(r.product_id))),
+  ];
+  const nameById = new Map<string, string>();
+  if (productIds.length > 0) {
+    const { data: prods, error: e3 } = await sb
+      .from("products")
+      .select("id, name")
+      .in("id", productIds);
+    if (e3) throw e3;
+    for (const p of prods ?? []) {
+      nameById.set(String(p.id), String(p.name));
+    }
+  }
+  const bySale = new Map<string, SaleOrder["items"]>();
+  for (const r of rows ?? []) {
+    const sid = String(r.sale_id);
+    const qty = num(r.quantity);
+    const up = num(r.unit_price);
+    const line = Math.round(qty * up * 100) / 100;
+    const lineRow = {
+      product_id: String(r.product_id),
+      product_name: nameById.get(String(r.product_id)) ?? "Unknown",
+      quantity: qty,
+      unit_price: up,
+      line_total: line,
+    };
+    const cur = bySale.get(sid) ?? [];
+    cur.push(lineRow);
+    bySale.set(sid, cur);
+  }
+  return list.map((s) => ({
+    id: String(s.id),
+    total: num(s.total),
+    created_at: String(s.created_at),
+    items: bySale.get(String(s.id)) ?? [],
+  }));
 }
 
 export async function importSaleRowsToDb(

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import type { AlertType } from "@/lib/types";
 
@@ -94,13 +95,21 @@ export default function AlertsPage() {
                     </p>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => resolve(a.id)}
-                  className="self-start rounded-full border border-white/15 bg-white/5 px-4 py-1.5 text-sm text-zinc-200 hover:bg-white/10"
-                >
-                  Dismiss
-                </button>
+                <div className="flex flex-wrap items-center gap-2 self-start">
+                  <Link
+                    href={`/inventory?focus=${encodeURIComponent(a.product_id)}`}
+                    className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-4 py-1.5 text-sm font-medium text-emerald-200 hover:bg-emerald-500/20"
+                  >
+                    Adjust stock
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => resolve(a.id)}
+                    className="rounded-full border border-white/15 bg-white/5 px-4 py-1.5 text-sm text-zinc-200 hover:bg-white/10"
+                  >
+                    Dismiss
+                  </button>
+                </div>
               </li>
             );
           })}

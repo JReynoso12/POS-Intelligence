@@ -2,7 +2,9 @@
 
 import { format, formatDistanceToNow } from "date-fns";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { useAppRole } from "@/components/app-role-context";
 import {
   Bar,
   BarChart,
@@ -22,13 +24,29 @@ import type {
   IntelligenceSnapshot,
   SmartInsight,
 } from "@/lib/types";
-import { money } from "@/lib/format";
+import { money, moneyAxis } from "@/lib/format";
 
 const REFRESH_MS = 8000;
 const chartColors = ["#34d399", "#2dd4bf", "#a78bfa", "#fbbf24", "#fb7185", "#94a3b8"];
 
-function TrendPct({ v }: { v: number | null }) {
+function TrendPct({
+  v,
+  baselineWasZero,
+  baselineLabel,
+}: {
+  v: number | null;
+  /** When true and v is null, show friendly copy instead of an em dash */
+  baselineWasZero?: boolean;
+  baselineLabel?: string;
+}) {
   if (v === null) {
+    if (baselineWasZero) {
+      return (
+        <span className="text-zinc-400">
+          {baselineLabel ?? "No activity yesterday"}
+        </span>
+      );
+    }
     return <span className="text-zinc-500">—</span>;
   }
   if (v === 0) {
@@ -71,6 +89,8 @@ function insightIcon(kind: SmartInsight["kind"]) {
 }
 
 export default function ReportsPage() {
+  const router = useRouter();
+  const { role, status: roleStatus } = useAppRole();
   const [intel, setIntel] = useState<IntelligenceSnapshot | null>(null);
   const [emailBlock, setEmailBlock] = useState<{
     html?: string;
@@ -94,31 +114,77 @@ export default function ReportsPage() {
   }, []);
 
   useEffect(() => {
-    void loadIntel();
+    let cancelled = false;
+    (async () => {
+      try {
+        const [intelRes, emailRes] = await Promise.all([
+          fetch("/api/intelligence"),
+          fetch("/api/cron/daily-report"),
+        ]);
+        if (cancelled) return;
+        if (intelRes.ok) {
+          const j = (await intelRes.json()) as IntelligenceSnapshot;
+          setIntel(j);
+          setLoadError(null);
+          setLastSync(new Date());
+        } else {
+          setLoadError(`Request failed (${intelRes.status})`);
+        }
+        const jEmail = await emailRes.json().catch(() => ({}));
+        setEmailBlock({
+          html: jEmail.html as string | undefined,
+          message: jEmail.message as string | undefined,
+          sent: jEmail.sent as boolean | undefined,
+        });
+      } catch (e) {
+        if (!cancelled) {
+          setLoadError(e instanceof Error ? e.message : "Network error");
+        }
+      }
+    })();
     const id = setInterval(() => void loadIntel(), REFRESH_MS);
-    return () => clearInterval(id);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, [loadIntel]);
 
   useEffect(() => {
-    let cancelled = false;
-    fetch("/api/cron/daily-report")
-      .then((r) => r.json())
-      .then((j) => {
-        if (!cancelled) {
-          setEmailBlock({
-            html: j.html as string | undefined,
-            message: j.message as string | undefined,
-            sent: j.sent as boolean | undefined,
-          });
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setEmailBlock({});
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    if (roleStatus !== "ready") return;
+    if (role === "cashier") router.replace("/inventory");
+  }, [roleStatus, role, router]);
+
+  const exportCsv = useCallback(() => {
+    if (!intel) return;
+    const d = intel.dashboard;
+    const kpis = d.kpis;
+    const rows: string[][] = [
+      ["Section", "Metric", "Value"],
+      ["Today", "Revenue", String(kpis.totalSalesToday)],
+      ["Today", "Orders", String(kpis.orderCountToday)],
+      ["Today", "Gross profit", String(kpis.grossProfitToday ?? "")],
+    ];
+    for (const p of d.trend) {
+      rows.push(["Trend (30d)", p.date, String(p.sales)]);
+    }
+    for (const c of intel.categoryLast7Days) {
+      rows.push(["Category (7d)", c.category, String(c.revenue)]);
+    }
+    const esc = (s: string) =>
+      /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    const body = rows.map((r) => r.map(esc).join(",")).join("\n");
+    const blob = new Blob([body], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `pos-intelligence-${format(new Date(), "yyyy-MM-dd")}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [intel]);
+
+  if (roleStatus === "ready" && role === "cashier") {
+    return null;
+  }
 
   if (loadError && !intel) {
     return (
@@ -148,6 +214,9 @@ export default function ReportsPage() {
     sub: string;
     trend: number | null;
     trendLabel: string;
+    /** When trend is null because the prior day had no activity */
+    baselineWasZero: boolean;
+    baselineHint: string;
     muted?: boolean;
   }[] = [
     {
@@ -156,6 +225,11 @@ export default function ReportsPage() {
       sub: `${kpis.orderCountToday} orders`,
       trend: vy.revenuePct,
       trendLabel: "vs yesterday",
+      baselineWasZero: vy.yesterdayRevenue === 0,
+      baselineHint:
+        vy.yesterdayRevenue === 0
+          ? "No sales yesterday"
+          : `Yesterday ${money(vy.yesterdayRevenue)}`,
     },
     {
       label: "Orders today",
@@ -163,6 +237,11 @@ export default function ReportsPage() {
       sub: "Transactions",
       trend: vy.ordersPct,
       trendLabel: "vs yesterday",
+      baselineWasZero: vy.yesterdayOrders === 0,
+      baselineHint:
+        vy.yesterdayOrders === 0
+          ? "No orders yesterday"
+          : `Yesterday ${vy.yesterdayOrders} orders`,
     },
     {
       label: "Avg order value",
@@ -173,6 +252,12 @@ export default function ReportsPage() {
       sub: "Per order today",
       trend: vy.avgOrderPct,
       trendLabel: "vs yesterday",
+      baselineWasZero:
+        vy.yesterdayOrders === 0 && intel.avgOrderYesterday === 0,
+      baselineHint:
+        vy.yesterdayOrders === 0
+          ? "No orders yesterday — no AOV baseline"
+          : `Yesterday avg ${money(intel.avgOrderYesterday)}`,
     },
     {
       label: "Gross profit (today)",
@@ -183,6 +268,8 @@ export default function ReportsPage() {
       sub: kpis.hasCostData ? "Cost vs price" : "Set cost_price on SKUs",
       trend: vy.profitPct,
       trendLabel: "vs yesterday",
+      baselineWasZero: false,
+      baselineHint: "",
       muted: !kpis.hasCostData,
     },
   ];
@@ -215,6 +302,13 @@ export default function ReportsPage() {
             className="rounded-full bg-white/10 px-4 py-2 text-sm text-white hover:bg-white/15"
           >
             Refresh now
+          </button>
+          <button
+            type="button"
+            onClick={exportCsv}
+            className="rounded-full border border-white/15 bg-emerald-500/15 px-4 py-2 text-sm font-medium text-emerald-200 ring-1 ring-emerald-500/30 hover:bg-emerald-500/25"
+          >
+            Export CSV
           </button>
         </div>
       </div>
@@ -267,7 +361,13 @@ export default function ReportsPage() {
               </p>
               <p className="mt-1 text-sm text-zinc-500">{c.sub}</p>
               <p className="mt-3 flex flex-wrap items-baseline gap-2 text-sm">
-                <TrendPct v={c.trend} />
+                <TrendPct
+                  v={c.trend}
+                  baselineWasZero={
+                    c.trend === null && c.baselineWasZero && !c.muted
+                  }
+                  baselineLabel={c.baselineHint}
+                />
                 <span className="text-zinc-600">{c.trendLabel}</span>
               </p>
             </div>
@@ -287,6 +387,16 @@ export default function ReportsPage() {
             >
               <p className="font-medium text-zinc-100">{a.title}</p>
               <p className="mt-1 text-sm text-zinc-300">{a.detail}</p>
+              {a.product_id && (
+                <p className="mt-3">
+                  <Link
+                    href={`/inventory?focus=${encodeURIComponent(a.product_id)}`}
+                    className="text-sm font-medium text-emerald-300 underline-offset-2 hover:underline"
+                  >
+                    Adjust stock in Inventory →
+                  </Link>
+                </p>
+              )}
             </div>
           ))}
         </div>
@@ -323,8 +433,22 @@ export default function ReportsPage() {
               <LineChart data={intel.trend7Days}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#ffffff14" />
                 <XAxis dataKey="date" stroke="#71717a" fontSize={12} />
-                <YAxis stroke="#71717a" fontSize={12} />
+                <YAxis
+                  stroke="#71717a"
+                  fontSize={12}
+                  tickFormatter={(v) => moneyAxis(Number(v))}
+                  label={{
+                    value: "Revenue (PHP)",
+                    angle: -90,
+                    position: "insideLeft",
+                    fill: "#71717a",
+                    fontSize: 11,
+                  }}
+                />
                 <Tooltip
+                  formatter={(v: number | string) =>
+                    money(typeof v === "number" ? v : Number(v))
+                  }
                   contentStyle={{
                     background: "#0c0f0e",
                     border: "1px solid rgba(255,255,255,0.1)",
@@ -335,6 +459,7 @@ export default function ReportsPage() {
                 <Line
                   type="monotone"
                   dataKey="sales"
+                  name="Revenue"
                   stroke="#34d399"
                   strokeWidth={2}
                   dot={false}
@@ -349,36 +474,49 @@ export default function ReportsPage() {
             Sales by category
           </h3>
           <p className="text-sm text-zinc-500">Last 7 days</p>
-          <div className="mt-4 h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={intel.categoryLast7Days}
-                  dataKey="revenue"
-                  nameKey="category"
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={44}
-                  outerRadius={72}
-                  paddingAngle={2}
-                >
-                  {intel.categoryLast7Days.map((row, i) => (
-                    <Cell
-                      key={row.category}
-                      fill={chartColors[i % chartColors.length]}
-                    />
-                  ))}
-                </Pie>
-                <Tooltip
-                  formatter={(v: number) => money(v)}
-                  contentStyle={{
-                    background: "#0c0f0e",
-                    border: "1px solid rgba(255,255,255,0.1)",
-                    borderRadius: 12,
-                  }}
-                />
-              </PieChart>
-            </ResponsiveContainer>
+          <div className="mt-4 h-64 min-h-[16rem]">
+            {intel.categoryLast7Days.length === 0 ? (
+              <div className="flex h-full items-center justify-center rounded-xl border border-white/5 bg-black/20 px-4 text-center text-sm text-zinc-500">
+                No category sales in the last 7 days — record a sale or import
+                CSV to populate this chart.
+              </div>
+            ) : (
+              <ResponsiveContainer
+                width="100%"
+                height="100%"
+                key={intel.categoryLast7Days
+                  .map((c) => `${c.category}:${c.revenue}`)
+                  .join("|")}
+              >
+                <PieChart>
+                  <Pie
+                    data={intel.categoryLast7Days}
+                    dataKey="revenue"
+                    nameKey="category"
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={44}
+                    outerRadius={72}
+                    paddingAngle={2}
+                  >
+                    {intel.categoryLast7Days.map((row, i) => (
+                      <Cell
+                        key={row.category}
+                        fill={chartColors[i % chartColors.length]}
+                      />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    formatter={(v: number) => money(v)}
+                    contentStyle={{
+                      background: "#0c0f0e",
+                      border: "1px solid rgba(255,255,255,0.1)",
+                      borderRadius: 12,
+                    }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            )}
           </div>
         </div>
 
@@ -390,7 +528,17 @@ export default function ReportsPage() {
               <BarChart data={intel.topProductsToday}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#ffffff14" />
                 <XAxis dataKey="name" stroke="#71717a" fontSize={11} />
-                <YAxis stroke="#71717a" fontSize={12} />
+                <YAxis
+                  stroke="#71717a"
+                  fontSize={12}
+                  label={{
+                    value: "Units sold",
+                    angle: -90,
+                    position: "insideLeft",
+                    fill: "#71717a",
+                    fontSize: 11,
+                  }}
+                />
                 <Tooltip
                   contentStyle={{
                     background: "#0c0f0e",

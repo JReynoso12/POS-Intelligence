@@ -1,6 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
+import { AppRoleProvider } from "@/components/app-role-context";
 import { AppShell } from "@/components/app-shell";
 
 const AUTH_PREFIXES = ["/login", "/register"];
@@ -23,5 +24,9 @@ export function RouteShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  return <AppShell>{children}</AppShell>;
+  return (
+    <AppRoleProvider>
+      <AppShell>{children}</AppShell>
+    </AppRoleProvider>
+  );
 }

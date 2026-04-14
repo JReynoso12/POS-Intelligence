@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { format } from "date-fns";
+import { useCallback, useEffect, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -14,7 +15,7 @@ import {
   YAxis,
 } from "recharts";
 import type { DashboardPayload } from "@/lib/types";
-import { money } from "@/lib/format";
+import { money, moneyAxis } from "@/lib/format";
 
 const chartColors = ["#34d399", "#2dd4bf", "#a78bfa", "#fbbf24", "#fb7185"];
 
@@ -29,6 +30,32 @@ export function DashboardView() {
       .then(setData)
       .catch(() => setErr("Could not load dashboard"));
   }, []);
+
+  const exportCsv = useCallback(() => {
+    if (!data) return;
+    const rows: string[][] = [
+      ["Section", "Metric", "Value"],
+      ["Sales today", "Amount", String(data.kpis.totalSalesToday)],
+      ["Sales 7d", "Amount", String(data.kpis.totalSalesWeek)],
+      ["Sales 30d", "Amount", String(data.kpis.totalSalesMonth)],
+    ];
+    for (const p of data.trend) {
+      rows.push(["Trend", p.date, String(p.sales)]);
+    }
+    for (const c of data.categoryPerformance) {
+      rows.push(["Category", c.category, String(c.revenue)]);
+    }
+    const esc = (s: string) =>
+      /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    const body = rows.map((r) => r.map(esc).join(",")).join("\n");
+    const blob = new Blob([body], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `dashboard-${format(new Date(), "yyyy-MM-dd")}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [data]);
 
   if (err) {
     return (
@@ -54,22 +81,26 @@ export function DashboardView() {
     label: string;
     value: string;
     sub: string;
+    compare?: string;
     muted?: boolean;
   }[] = [
     {
       label: "Sales today",
       value: money(kpis.totalSalesToday),
       sub: `${kpis.orderCountToday} orders`,
+      compare: data.kpiCompare.todayVsYesterday.summary,
     },
     {
-      label: "Sales (7d)",
+      label: "Sales (7d rolling)",
       value: money(kpis.totalSalesWeek),
       sub: `${kpis.orderCountWeek} orders`,
+      compare: data.kpiCompare.weekVsPriorWeek.summary,
     },
     {
-      label: "Sales (30d)",
+      label: "Sales (30d rolling)",
       value: money(kpis.totalSalesMonth),
       sub: `${kpis.orderCountMonth} orders`,
+      compare: data.kpiCompare.monthVsPriorMonth.summary,
     },
     {
       label: "Gross profit (30d)",
@@ -92,8 +123,32 @@ export function DashboardView() {
     },
   ];
 
+  const topCount = data.topProducts.length;
+  const topTitle =
+    topCount >= 5
+      ? "Top 5 products (30d)"
+      : topCount === 0
+        ? "Top products (30d)"
+        : `Top products (30d) — ${topCount} with sales`;
+
   return (
     <div className="space-y-8">
+      <div className="flex flex-wrap justify-end">
+        <button
+          type="button"
+          onClick={exportCsv}
+          className="rounded-full border border-white/15 bg-emerald-500/15 px-4 py-2 text-sm font-medium text-emerald-200 ring-1 ring-emerald-500/30 hover:bg-emerald-500/25"
+        >
+          Export CSV
+        </button>
+      </div>
+
+      {data.sameSalesTotalsHint && (
+        <p className="rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+          {data.sameSalesTotalsHint}
+        </p>
+      )}
+
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {kpiCards.map((c) => (
           <div
@@ -109,6 +164,9 @@ export function DashboardView() {
               {c.value}
             </p>
             <p className="mt-1 text-sm text-zinc-500">{c.sub}</p>
+            {c.compare && (
+              <p className="mt-2 text-xs text-zinc-500">{c.compare}</p>
+            )}
           </div>
         ))}
       </section>
@@ -146,8 +204,22 @@ export function DashboardView() {
               <LineChart data={trendSlice}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#ffffff14" />
                 <XAxis dataKey="date" stroke="#71717a" fontSize={12} />
-                <YAxis stroke="#71717a" fontSize={12} />
+                <YAxis
+                  stroke="#71717a"
+                  fontSize={12}
+                  tickFormatter={(v) => moneyAxis(Number(v))}
+                  label={{
+                    value: "Revenue (PHP)",
+                    angle: -90,
+                    position: "insideLeft",
+                    fill: "#71717a",
+                    fontSize: 11,
+                  }}
+                />
                 <Tooltip
+                  formatter={(v: number | string) =>
+                    money(typeof v === "number" ? v : Number(v))
+                  }
                   contentStyle={{
                     background: "#0c0f0e",
                     border: "1px solid rgba(255,255,255,0.1)",
@@ -158,6 +230,7 @@ export function DashboardView() {
                 <Line
                   type="monotone"
                   dataKey="sales"
+                  name="Revenue"
                   stroke="#34d399"
                   strokeWidth={2}
                   dot={false}
@@ -176,7 +249,12 @@ export function DashboardView() {
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={data.categoryPerformance} layout="vertical">
                 <CartesianGrid strokeDasharray="3 3" stroke="#ffffff14" />
-                <XAxis type="number" stroke="#71717a" fontSize={12} />
+                <XAxis
+                  type="number"
+                  stroke="#71717a"
+                  fontSize={12}
+                  tickFormatter={(v) => moneyAxis(Number(v))}
+                />
                 <YAxis
                   type="category"
                   dataKey="category"
@@ -207,16 +285,24 @@ export function DashboardView() {
 
       <section className="grid gap-6 lg:grid-cols-2">
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
-          <h2 className="text-base font-semibold text-white">
-            Top 5 products (30d)
-          </h2>
+          <h2 className="text-base font-semibold text-white">{topTitle}</h2>
           <p className="text-sm text-zinc-500">By units sold</p>
           <div className="mt-4 h-72">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={data.topProducts}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#ffffff14" />
                 <XAxis dataKey="name" stroke="#71717a" fontSize={11} />
-                <YAxis stroke="#71717a" fontSize={12} />
+                <YAxis
+                  stroke="#71717a"
+                  fontSize={12}
+                  label={{
+                    value: "Units sold",
+                    angle: -90,
+                    position: "insideLeft",
+                    fill: "#71717a",
+                    fontSize: 11,
+                  }}
+                />
                 <Tooltip
                   contentStyle={{
                     background: "#0c0f0e",
@@ -234,7 +320,11 @@ export function DashboardView() {
           <h2 className="text-base font-semibold text-white">
             Slowest movers (30d)
           </h2>
-          <p className="text-sm text-zinc-500">Lowest units sold (with sales)</p>
+          <p className="text-sm text-zinc-500">
+            Lowest units sold among SKUs with at least one sale — not vs. stock
+            on hand. A high-margin item can still rank high in revenue while
+            moving fewer units than others.
+          </p>
           <ul className="mt-4 space-y-3">
             {data.worstProducts.map((p) => (
               <li

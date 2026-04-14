@@ -1,7 +1,26 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getAppStore } from "@/lib/db/hydrate";
-import { recordSaleInDb } from "@/lib/db/writes";
+import { listSaleOrdersFromDb, recordSaleInDb } from "@/lib/db/writes";
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const limit = Math.min(100, Number(url.searchParams.get("limit")) || 50);
+
+  try {
+    if (process.env.USE_DEMO_DATA === "1") {
+      const store = await getAppStore();
+      return NextResponse.json({ orders: store.listSaleOrders(limit) });
+    }
+    const orders = await listSaleOrdersFromDb(limit);
+    return NextResponse.json({ orders });
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "Server error" },
+      { status: 503 },
+    );
+  }
+}
 
 const bodySchema = z.object({
   items: z

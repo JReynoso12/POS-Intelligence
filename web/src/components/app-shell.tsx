@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
+import { useAppRole } from "@/components/app-role-context";
 import { AlertRealtime } from "@/components/alert-realtime";
 import { createClient } from "@/lib/supabase/client";
 
 const STORAGE_KEY = "pos-sidebar-collapsed";
 
-const links = [
+const allNavLinks = [
   {
     href: "/dashboard",
     label: "Dashboard",
@@ -19,10 +20,15 @@ const links = [
     label: "Inventory",
     icon: IconInventory,
   },
+  {
+    href: "/orders",
+    label: "Orders",
+    icon: IconOrders,
+  },
   { href: "/alerts", label: "Alerts", icon: IconAlerts },
   { href: "/import", label: "CSV import", icon: IconImport },
   { href: "/reports", label: "Intelligence", icon: IconReports },
-];
+] as const;
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -32,6 +38,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [hydrated, setHydrated] = useState(false);
   const [alertCount, setAlertCount] = useState(0);
   const [signingOut, setSigningOut] = useState(false);
+  const { role, status: roleStatus } = useAppRole();
+
+  const links = useMemo(() => {
+    if (roleStatus !== "ready") {
+      return [...allNavLinks];
+    }
+    if (role === "cashier") {
+      return allNavLinks.filter((l) =>
+        ["/inventory", "/orders", "/alerts"].includes(l.href),
+      );
+    }
+    return [...allNavLinks];
+  }, [role, roleStatus]);
 
   useEffect(() => {
     try {
@@ -208,7 +227,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="border-b border-white/10 bg-[#070a09]/80 px-4 py-4 backdrop-blur">
           <h1 className="text-lg font-semibold tracking-tight text-white">
-            Owner view — 10 second clarity
+            {roleStatus !== "ready"
+              ? "Loading…"
+              : role === "cashier"
+                ? "Cashier — record sales & stock"
+                : "Owner view — 10 second clarity"}
           </h1>
         </header>
         <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-8">
@@ -267,6 +290,25 @@ function IconDashboard({ className }: { className?: string }) {
     >
       <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
       <path d="M9 22V12h6v10" />
+    </svg>
+  );
+}
+
+function IconOrders({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z" />
+      <line x1="3" y1="6" x2="21" y2="6" />
+      <path d="M16 10a4 4 0 0 1-8 0" />
     </svg>
   );
 }
