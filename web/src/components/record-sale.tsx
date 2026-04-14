@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { money } from "@/lib/format";
 
 type Product = {
@@ -10,29 +10,54 @@ type Product = {
   selling_price: number | null;
 };
 
-export function RecordSale({ onRecorded }: { onRecorded?: () => void }) {
+export function RecordSale({
+  onRecorded,
+  catalogVersion = 0,
+}: {
+  onRecorded?: () => void;
+  /** Increment when product prices change so defaults stay in sync */
+  catalogVersion?: number;
+}) {
   const [products, setProducts] = useState<Product[]>([]);
   const [productId, setProductId] = useState("");
   const [qty, setQty] = useState(1);
   const [price, setPrice] = useState<number | "">("");
   const [msg, setMsg] = useState<string | null>(null);
 
+  /** Stable primitive so the dependency array length never changes between renders. */
+  const catalogVersionKey = catalogVersion ?? 0;
+
+  /** String fingerprint so price sync runs when prices load/update without putting `products[]` in useEffect deps. */
+  const catalogFingerprint = useMemo(
+    () =>
+      products.map((p) => `${p.id}:${p.selling_price ?? "x"}`).join("|"),
+    [products],
+  );
+
   useEffect(() => {
+    let cancelled = false;
     fetch("/api/products")
       .then((r) => r.json())
       .then((j) => {
-        setProducts(j.products ?? []);
-        if (j.products?.[0]) {
-          setProductId(j.products[0].id);
-          setPrice(j.products[0].selling_price ?? "");
+        if (cancelled) return;
+        const list = j.products ?? [];
+        setProducts(list);
+        if (list[0]) {
+          setProductId((prev) => {
+            const still = list.some((p: Product) => p.id === prev);
+            return still ? prev : list[0].id;
+          });
         }
       });
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [catalogVersionKey]);
 
   useEffect(() => {
     const p = products.find((x) => x.id === productId);
     if (p && p.selling_price != null) setPrice(p.selling_price);
-  }, [productId, products]);
+  }, [productId, catalogVersionKey, catalogFingerprint]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();

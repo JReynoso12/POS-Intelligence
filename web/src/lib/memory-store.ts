@@ -427,6 +427,12 @@ export class MemoryStore {
     this.refreshAlerts();
   }
 
+  updateSellingPrice(productId: string, selling_price: number | null) {
+    const p = this.getProduct(productId);
+    if (!p) return;
+    p.selling_price = selling_price;
+  }
+
   importSaleRows(
     rows: {
       date: string;

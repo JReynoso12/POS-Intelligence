@@ -115,6 +115,18 @@ export async function recordSaleInDb(items: SaleLine[], createdAt?: Date) {
   };
 }
 
+export async function updateProductSellingPriceInDb(
+  productId: string,
+  selling_price: number | null,
+) {
+  const sb = createServiceClient();
+  const { error } = await sb
+    .from("products")
+    .update({ selling_price })
+    .eq("id", productId);
+  if (error) throw error;
+}
+
 export async function adjustInventoryInDb(
   productId: string,
   adjust?: number,
