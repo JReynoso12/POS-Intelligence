@@ -1,0 +1,16 @@
+{
+  "name": "pos-intelligence",
+  "private": true,
+  "scripts": {
+    "db:link": "node scripts/run-supabase.mjs link",
+    "db:push": "node scripts/run-supabase.mjs db push",
+    "db:pull": "node scripts/run-supabase.mjs db pull",
+    "db:reset": "node scripts/run-supabase.mjs db reset",
+    "db:start": "node scripts/run-supabase.mjs start",
+    "db:stop": "node scripts/run-supabase.mjs stop",
+    "db:types": "node scripts/run-supabase.mjs gen types typescript --linked --schema public > web/src/lib/database.types.ts"
+  },
+  "devDependencies": {
+    "supabase": "^2.90.1"
+  }
+}
